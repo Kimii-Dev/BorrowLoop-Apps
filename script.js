@@ -385,27 +385,17 @@ async function sendAISupportMsg() {
   chatBody.innerHTML += `<div id="${loadingId}" class="chat-msg ai"><i>BorrowBot is thinking...</i></div>`;
   chatBody.scrollTop = chatBody.scrollHeight;
 
-  // 3. API Config - MAKE SURE YOUR TOKEN GOES HERE!
-  const HF_TOKEN = "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"; 
-  const MODEL_ID = "HuggingFaceH4/zephyr-7b-beta";
-
   try {
-    const response = await fetch(`https://api-inference.huggingface.co/models/${MODEL_ID}`, {
+    const response = await fetch(`/chat`, {
       headers: {
-        "Authorization": `Bearer ${HF_TOKEN}`,
         "Content-Type": "application/json"
       },
       method: "POST",
       body: JSON.stringify({
-        inputs: `<|im_start|>system\nYou are BorrowBot, an AI customer support assistant for BorrowLoop—a peer-to-peer community sharing marketplace. Keep answers short and concise.<|im_end|>\n<|im_start|>user\n${userMsg}<|im_end|>\n<|im_start|>assistant\n`,
-        parameters: {
-          max_new_tokens: 100,
-          return_full_text: false
-        }
+        message: userMsg
       })
     });
 
-    // Detailed error extraction so it displays in the chat instead of failing silently
     if (!response.ok) {
         let errorMsg = `HTTP ${response.status}`;
         try {
@@ -421,24 +411,18 @@ async function sendAISupportMsg() {
     const loadingElem = document.getElementById(loadingId);
     if (loadingElem) loadingElem.remove();
 
-    let botReply = "I am having trouble processing that right now. Please try again.";
-
-    if (Array.isArray(result) && result[0] && result[0].generated_text) {
-      botReply = result[0].generated_text.replace(/<\|im_end\|>/g, '').trim();
-    } else if (result.error) {
-      botReply = `API Error: ${typeof result.error === 'string' ? result.error : JSON.stringify(result.error)}`;
-    }
+    let botReply = result.reply || "I am having trouble processing that right now. Please try again.";
 
     chatBody.innerHTML += `<div class="chat-msg ai">${botReply}</div>`;
   } catch (error) {
-    console.error("Hugging Face API Error:", error);
+    console.error("Local Server Error:", error);
     const loadingElem = document.getElementById(loadingId);
     if (loadingElem) loadingElem.remove();
     
     // Renders the precise error directly in the widget
     chatBody.innerHTML += `<div class="chat-msg ai" style="color: #ff6b6b; border-color: #552222; background: #2a1111;">
-      <b>API Error:</b> ${error.message}
-      <br><br><span style="font-size:11px; color:#aaa;">Check if your HF_TOKEN is valid in script.js.</span>
+      <b>Local Server Error:</b> ${error.message}
+      <br><br><span style="font-size:11px; color:#aaa;">Ensure server.py is running on port 5000.</span>
     </div>`;
   }
 
