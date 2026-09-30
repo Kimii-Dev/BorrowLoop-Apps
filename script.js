@@ -52,6 +52,8 @@ function showPage(id) {
 
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById(id).classList.add('active');
+  
+  if (id === 'profile') updateProfileUI();
   if (id === 'bookings') renderBookings();
   window.scrollTo(0, 0);
 }
@@ -202,6 +204,11 @@ function handleCheckoutIntent(id) {
     return;
   }
 
+  if (!isVerified()) {
+    requireVerification(() => proceedToPayment(id, s, e));
+    return;
+  }
+
   proceedToPayment(id, s, e);
 }
 
@@ -326,10 +333,205 @@ function sendChat() {
   if (x.value.trim()) { toast('Message sent'); x.value = ''; }
 }
 
+
+// ── Profile UI Updates ──────────────────────────────────────────
+function updateProfileUI() {
+  if (!currentUser) return;
+  document.getElementById('profName').value = currentUser.name || '';
+  
+  const isV = isVerified();
+  document.getElementById('statVerify').innerHTML = isV ? '<span style="color:#00c864">Verified ✅</span>' : 'Unverified ❌';
+  document.getElementById('profVerifyBadge').innerHTML = isV ? '✅ Email is verified' : '⚠️ Email not verified';
+  document.getElementById('profVerifyBtn').style.display = isV ? 'none' : 'block';
+}
+
+// Hook it into showPage
+
+// ── Email OTP Verification System ────────────────────────────────
+
+function isVerified() {
+  return currentUser && currentUser.verified === true;
+}
+
+function requireVerification(onSuccess) {
+  if (!currentUser) {
+    toast('Please log in first.');
+    openAuthModal();
+    return;
+  }
+  if (isVerified()) {
+    onSuccess();
+    return;
+  }
+  openOtpModal(onSuccess);
+}
+
+function openOtpModal(onSuccess) {
+  document.getElementById('modalContent').innerHTML = `
+    <button class="close" onclick="closeModal()">✕</button>
+    <h2>🔐 Verify your Email</h2>
+    <p class="muted">To list or book items, you need to verify your email address.</p>
+    <p style="font-size:13px;">We'll send a 6-digit code to: <b>${currentUser.email}</b></p>
+    <div id="otpStep1">
+      <button class="primary" style="width:100%;margin-top:12px;" onclick="sendOtp()">📧 Send Verification Code</button>
+    </div>
+    <div id="otpStep2" style="display:none;margin-top:16px;">
+      <label>Enter 6-digit code</label>
+      <input id="otpInput" type="text" maxlength="6" placeholder="e.g. 483920"
+             style="letter-spacing:8px;font-size:20px;font-weight:700;text-align:center;"
+             oninput="this.value=this.value.replace(/[^0-9]/g,'')">
+      <div id="otpError" style="color:#ff6b6b;font-size:13px;margin-top:6px;display:none;"></div>
+      <button class="primary" style="width:100%;margin-top:12px;" onclick="submitOtp(${JSON.stringify(onSuccess)})">✅ Verify</button>
+      <button class="secondary" style="width:100%;margin-top:8px;font-size:12px;" onclick="sendOtp()">🔄 Resend code</button>
+    </div>
+    <div id="otpStatus" style="margin-top:10px;font-size:13px;color:#aaa;"></div>
+  `;
+  document.getElementById('modal').classList.add('show');
+}
+
+async function sendOtp() {
+  const statusEl = document.getElementById('otpStatus');
+  const step1    = document.getElementById('otpStep1');
+  const step2    = document.getElementById('otpStep2');
+
+  if (statusEl) statusEl.textContent = '⏳ Sending code...';
+
+  try {
+    const res  = await fetch('/send-otp', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ email: currentUser.email })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      if (statusEl) statusEl.textContent = `✅ Code sent to ${currentUser.email}. Check your inbox!`;
+      if (step1)    step1.style.display = 'none';
+      if (step2)    step2.style.display = 'block';
+    } else {
+      if (statusEl) statusEl.textContent = '❌ ' + data.message;
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '❌ Could not reach server. Make sure server.py is running.';
+  }
+}
+
+async function submitOtp(onSuccess) {
+  const otp      = (document.getElementById('otpInput')?.value || '').trim();
+  const errorEl  = document.getElementById('otpError');
+  const statusEl = document.getElementById('otpStatus');
+
+  if (otp.length !== 6) {
+    if (errorEl) { errorEl.textContent = 'Please enter the full 6-digit code.'; errorEl.style.display = 'block'; }
+    return;
+  }
+
+  if (statusEl) statusEl.textContent = '⏳ Verifying...';
+
+  try {
+    const res  = await fetch('/verify-otp', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ email: currentUser.email, otp })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      currentUser.verified = true;
+      save();
+      closeModal();
+      toast('✅ Email verified! You can now list and book items.');
+      if (typeof onSuccess === 'function') onSuccess();
+    } else {
+      if (errorEl) { errorEl.textContent = '❌ ' + data.message; errorEl.style.display = 'block'; }
+      if (statusEl) statusEl.textContent = '';
+    }
+  } catch (e) {
+    if (errorEl) { errorEl.textContent = '❌ Server error. Please try again.'; errorEl.style.display = 'block'; }
+  }
+}
+// ──────────────────────────────────────────────────────────────────
+
+// ── AI Dynamic Pricing Engine ─────────────────────────────────────
+let _lastSuggestion = null;
+
+async function suggestPrice() {
+  const name        = document.getElementById('newName').value.trim();
+  const category    = document.getElementById('newCat').value;
+  const retailInput = document.getElementById('newRetailValue');
+  const retailValue = parseFloat(retailInput ? retailInput.value : 0);
+  const condition   = document.getElementById('newCondition').value;
+
+  if (!retailValue || retailValue <= 0) {
+    toast('Please enter the item\'s retail value first');
+    return;
+  }
+
+  const btn = document.querySelector('button[onclick="suggestPrice()"]');
+  if (btn) { btn.textContent = '⏳ Calculating...'; btn.disabled = true; }
+
+  try {
+    const res = await fetch('/suggest-price', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ item_name: name, category, retail_value: retailValue, condition })
+    });
+
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+    _lastSuggestion = data;
+
+    document.getElementById('suggestedRate').textContent    = `RM ${data.daily_rate.toFixed(2)}`;
+    document.getElementById('suggestedDeposit').textContent = `RM ${data.deposit}`;
+    document.getElementById('suggestedMonthly').textContent = `~RM ${data.monthly_earnings_est.toFixed(0)}`;
+    document.getElementById('seasonalityNote').textContent  = data.seasonality_note;
+    document.getElementById('demandNote').textContent       = data.demand_note;
+
+    // Show Gemini reasoning if available
+    const reasoningEl = document.getElementById('geminiReasoning');
+    if (reasoningEl) {
+      if (data.reasoning) {
+        reasoningEl.textContent = '💬 ' + data.reasoning;
+        reasoningEl.style.display = 'block';
+      } else {
+        reasoningEl.style.display = 'none';
+      }
+    }
+
+    // Show powered_by badge
+    const poweredEl = document.getElementById('poweredBy');
+    if (poweredEl) {
+      poweredEl.textContent = data.powered_by
+        ? `⚡ Powered by ${data.powered_by}`
+        : '⚡ Powered by formula engine';
+    }
+
+    document.getElementById('pricingSuggestion').style.display = 'block';
+
+  } catch (e) {
+    toast('Pricing server not reachable — set price manually.');
+    console.error('suggestPrice error:', e);
+  } finally {
+    if (btn) { btn.textContent = '✨ AI Suggest Price'; btn.disabled = false; }
+  }
+}
+
+function acceptSuggestedPrice() {
+  if (!_lastSuggestion) return;
+  document.getElementById('newPrice').value   = _lastSuggestion.daily_rate.toFixed(2);
+  document.getElementById('newDeposit').value = _lastSuggestion.deposit;
+  toast('✅ AI price applied!');
+}
+// ─────────────────────────────────────────────────────────────────
+
 function addItem() {
   if (!currentUser) {
     toast('Please log in to list an item');
     openAuthModal();
+    return;
+  }
+  if (!isVerified()) {
+    requireVerification(() => addItem());
     return;
   }
   const name = document.getElementById('newName').value.trim();
